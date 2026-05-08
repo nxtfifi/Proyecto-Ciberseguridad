@@ -49,19 +49,19 @@ El sistema está construido sobre tres capas principales que interactúan de for
 ### 3.1 Estructura de Archivos
 
 ```
-proyecto-seguridad/
+Proyecto-Ciberseguridad/
 ├── app.py                  # Aplicación principal y orquestador
 ├── requirements.txt        # Dependencias del proyecto
 ├── .env                    # Variables de entorno (API key)
 ├── scanner/
 │   ├── headers.py          # Módulo: encabezados HTTP de seguridad
 │   ├── ssl_check.py        # Módulo: validación SSL/TLS
-│   ├── tech_detect.py      # Módulo: detección de tecnologías
+│   ├── tech_detect.py      # Módulo: detección de tecnologías (firmas + IA)
 │   ├── ports.py            # Módulo: escaneo de puertos
 │   ├── forms.py            # Módulo: detección de formularios
 │   └── exposure.py         # Módulo: rutas y archivos expuestos
 └── ai/
-    └── analyst.py          # Integración con OpenAI: análisis y bot
+    └── analyst.py          # Integración con OpenAI: análisis, bot y fingerprinting IA
 ```
 
 ---
@@ -90,27 +90,40 @@ proyecto-seguridad/
 
 ### 4.2 Validación SSL/TLS (`ssl_check.py`)
 
-**Descripción:** Establece una conexión directa al puerto 443 del servidor usando los módulos estándar `ssl` y `socket` de Python. Extrae y valida la información del certificado digital del sitio.
+**Descripción:** Establece una conexión directa al puerto 443 del servidor usando los módulos estándar `ssl` y `socket` de Python. La validación de la cadena de confianza se realiza contra el bundle de certificados raíz provisto por la librería `certifi`, lo que garantiza un conjunto de Autoridades Certificadoras (CA) actualizado e independiente del sistema operativo y resuelve el error común en entornos Windows `unable to get local issuer certificate`.
 
 **Datos recolectados:**
 - Uso de HTTPS en la URL ingresada
-- Validez del certificado (cadena de confianza)
+- Validez del certificado (cadena de confianza verificada contra el bundle de `certifi`)
 - Fecha de expiración y días restantes
 - Versión del protocolo TLS negociada (TLS 1.0, 1.1, 1.2 o 1.3)
 - Entidad emisora del certificado (CA)
 - Nombre del sujeto (Common Name)
 
-**Criterios de riesgo:** Un certificado con menos de 30 días de vigencia, el uso de TLS 1.1 o inferior, o un certificado auto-firmado sin emisor reconocido representan riesgos de seguridad.
+**Criterios de riesgo (interpretativos):** El módulo recolecta los datos crudos del certificado y la conexión TLS; la valoración de riesgo (por ejemplo, certificado próximo a expirar, versión TLS obsoleta o emisor no reconocido) se delega al módulo de IA, que recibe estos datos como parte del JSON de entrada y los pondera junto con el resto del escaneo.
 
 ---
 
-### 4.3 Detección de Tecnologías (`tech_detect.py`)
+### 4.3 Detección de Tecnologías (`tech_detect.py` + `analyst.py`)
 
-**Descripción:** Descarga el HTML de la página y el conjunto completo de encabezados HTTP, luego realiza una búsqueda de patrones o "firmas" asociadas a tecnologías web conocidas. Este enfoque es similar al que utilizan herramientas como WhatWeb o Wappalyzer.
+**Descripción:** Este módulo identifica las tecnologías que conforman el sitio analizado mediante un enfoque híbrido en dos capas que se ejecutan de forma secuencial. Su objetivo es replicar, con recursos accesibles, la funcionalidad que ofrecen herramientas como `whatweb` (Kali Linux) o Wappalyzer.
 
-**Tecnologías detectables:** WordPress, Joomla, Drupal, Shopify, Wix, React, Vue.js, jQuery, Bootstrap, nginx, Apache, Cloudflare, PHP, ASP.NET, entre otras.
+**Capa 1 — Detección por firmas (rápida, local):**
+El módulo realiza una petición HTTP GET con `requests` y compara el HTML y los encabezados de respuesta contra un diccionario de firmas predefinidas. Si encuentra coincidencias, registra la tecnología asociada. Las firmas predefinidas cubren las siguientes tecnologías: WordPress, Joomla, Drupal, Shopify, Wix, React, Vue.js, jQuery, Bootstrap, nginx, Apache, Cloudflare, PHP y ASP.NET. El encabezado `Server` se registra siempre tal cual lo expone el sitio.
 
-**Método:** Coincidencia de cadenas de texto (substrings) entre el contenido del sitio y un diccionario de firmas predefinidas. Por ejemplo, si el HTML contiene `wp-content`, el sistema infiere que el sitio usa WordPress; si el encabezado `Server` contiene `Apache/2.4`, se registra el servidor web y su versión exacta.
+**Capa 2 — Fingerprinting con IA (amplia, generalista):**
+A partir de la misma respuesta HTTP, el módulo construye una huella estructurada (fingerprint) que incluye:
+
+- Encabezados HTTP completos
+- Nombres de las cookies emitidas
+- Título de la página (`<title>`)
+- Etiquetas `<meta>` (name / property / http-equiv y su contenido)
+- URLs de los `<script src="...">` (hasta 30)
+- URLs de los `<link href="...">` (hasta 30)
+
+Esta huella se envía a la función `detectar_tecnologias_ia()` definida en `analyst.py`, la cual instruye al modelo GPT-4o mini para que actúe como un experto en fingerprinting web y devuelva un array JSON con las tecnologías identificadas (CMS, frameworks frontend/backend, librerías JS, servidores web, lenguajes, CDN, herramientas de analítica, sistemas de pago, page builders, fonts, etc.). El resultado se fusiona con las tecnologías detectadas por la Capa 1 evitando duplicados.
+
+**Ventaja del enfoque híbrido:** La Capa 1 es determinista, instantánea y no consume API. La Capa 2 cubre el caso en que el sitio utiliza tecnologías no contempladas en el diccionario de firmas o cuando los indicadores son sutiles (orden de cookies, dominios de CDN, atributos en meta tags). Juntas ofrecen cobertura amplia sin sacrificar velocidad para sitios populares.
 
 **Riesgo asociado:** Revelar la versión exacta del servidor (ejemplo: `Apache/2.4.66`) permite a un atacante buscar vulnerabilidades conocidas (CVEs) específicas para esa versión.
 
@@ -175,15 +188,16 @@ Se integra la API de OpenAI utilizando el modelo **GPT-4o mini**, seleccionado p
 
 ### 5.2 Funciones de IA Implementadas
 
-El sistema cumple con las 5 funciones mínimas requeridas:
+El sistema cumple con las 5 funciones mínimas requeridas e incorpora una sexta función adicional de fingerprinting:
 
 | Función | Implementación |
 |---|---|
 | Resumir hallazgos | Resumen ejecutivo en 2-3 oraciones con lenguaje accesible |
-| Clasificar / priorizar riesgo | Tabla de hallazgos con nivel Alto / Medio / Bajo |
+| Clasificar / priorizar riesgo | Tabla markdown de hallazgos con la columna "Nivel de riesgo" en valores **Alto** / **Medio** / **Bajo**, coloreados en rojo, amarillo y verde respectivamente mediante un post-procesamiento que envuelve el valor en un `<span>` con color |
 | Explicar impacto | Descripción del impacto real de los 2 hallazgos más críticos |
 | Sugerir mitigaciones | Top 3 de acciones concretas y accionables |
 | Lenguaje ejecutivo | Todo el análisis está redactado para ser comprensible sin conocimientos técnicos |
+| Fingerprinting de tecnologías | Función `detectar_tecnologias_ia()` que recibe la huella HTTP del sitio (headers, cookies, title, meta tags, scripts, links) y devuelve un array JSON con las tecnologías identificadas, complementando la detección por firmas (ver sección 4.3) |
 
 ### 5.3 Funcionamiento del Bot Conversacional
 
@@ -197,10 +211,11 @@ Dado que el modelo recibe datos estructurados reales como input y no se le pide 
 
 ## 6. Interfaz de Usuario (`app.py`)
 
-La interfaz está construida con **Streamlit**, un framework de Python que permite crear aplicaciones web interactivas sin necesidad de HTML, CSS o JavaScript. La interfaz se divide en dos columnas:
+La interfaz está construida con **Streamlit**, un framework de Python que permite crear aplicaciones web interactivas sin necesidad de HTML, CSS o JavaScript. La interfaz se divide en dos columnas, más una sección de pie de página común:
 
-- **Columna izquierda:** Campo de ingreso de URL, botón de análisis, indicadores de progreso por módulo, análisis de la IA y resultados detallados organizados en secciones expandibles con código de colores por nivel de riesgo.
-- **Columna derecha:** Chat conversacional con historial de mensajes donde el usuario puede hacer preguntas sobre los hallazgos.
+- **Columna izquierda:** Formulario con el campo de ingreso de URL y el botón "🔍 Analizar". El campo y el botón están envueltos en un `st.form`, lo que permite al usuario disparar el análisis presionando **Enter** sobre el campo de texto sin necesidad de hacer click. Tras la ejecución se muestran los indicadores de progreso por módulo, el análisis interpretado por la IA y los resultados detallados de cada módulo organizados en secciones expandibles con marcadores visuales por nivel de riesgo.
+- **Columna derecha:** Apartado expandible "⚖️ Términos y condiciones" con el aviso legal de uso académico y autorizado, y debajo el chat conversacional con historial de mensajes donde el usuario puede hacer preguntas sobre los hallazgos.
+- **Pie de página:** Centrado al final de la página, muestra el aviso de derechos de autor con el año, el nombre de la herramienta y los autores (Felix Alejandro García García y Emiliano Mendoza Vázquez), simulando una herramienta registrada.
 
 ---
 
@@ -246,6 +261,7 @@ Para un despliegue permanente y gratuito, **Streamlit Community Cloud** (streaml
 | Peticiones HTTP | requests | Latest |
 | Parsing HTML | BeautifulSoup4 | Latest |
 | SSL/TLS | ssl, socket | Stdlib Python |
+| Bundle de CAs raíz | certifi | Latest |
 | IA | OpenAI GPT-4o mini | API v1 |
 | Variables de entorno | python-dotenv | Latest |
 
@@ -255,7 +271,7 @@ Para un despliegue permanente y gratuito, **Streamlit Community Cloud** (streaml
 
 1. **No es una auditoría certificada.** La herramienta realiza validaciones básicas y no reemplaza una auditoría de seguridad profesional (pentesting, VAPT).
 2. **El escaneo de puertos es superficial.** Solo evalúa 10 puertos comunes con timeout de 2 segundos. Herramientas como Nmap realizan escaneos mucho más exhaustivos.
-3. **La detección de tecnologías es por firmas predefinidas.** Si el sitio oculta sus tecnologías o usa una menos común, no será detectada.
+3. **La detección de tecnologías es de mejor esfuerzo.** Aunque combina firmas predefinidas con interpretación por IA sobre la huella HTTP del sitio, no garantiza identificar tecnologías intencionalmente ocultas, servidas detrás de un CDN sin indicadores visibles, o cargadas dinámicamente por JavaScript después del render inicial.
 4. **No analiza el interior de la aplicación.** No realiza pruebas autenticadas, no evalúa lógica de negocio, ni detecta vulnerabilidades en el código fuente.
 5. **Dependencia de la API de OpenAI.** Si la API no está disponible o la key ha alcanzado su límite, el módulo de IA no funcionará.
 6. **URL local por defecto.** Sin configuración adicional, la app solo es accesible en la red local del equipo donde corre.

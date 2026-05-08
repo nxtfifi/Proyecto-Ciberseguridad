@@ -10,7 +10,7 @@ from scanner.tech_detect import detect_technologies
 from scanner.ports import scan_ports
 from scanner.forms import detect_forms
 from scanner.exposure import check_exposure
-from ai.analyst import construir_resumen, chat_bot
+from ai.analyst import construir_resumen, chat_bot, detectar_tecnologias_ia
 
 st.set_page_config(page_title="WebSec Analyzer", page_icon="🔐", layout="wide")
 
@@ -28,9 +28,12 @@ col_scan, col_chat = st.columns([1.2, 1])
 
 with col_scan:
     st.subheader("Análisis de seguridad")
-    url = st.text_input("URL del sitio autorizado", placeholder="https://ejemplo.com")
 
-    if st.button("🔍 Analizar", type="primary", disabled=not url):
+    with st.form("scan_form", clear_on_submit=False):
+        url = st.text_input("URL del sitio autorizado", placeholder="https://ejemplo.com")
+        submit = st.form_submit_button("🔍 Analizar", type="primary")
+
+    if submit and url:
         with st.spinner("Ejecutando análisis..."):
             resultados = {}
 
@@ -40,6 +43,14 @@ with col_scan:
                 resultados["ssl"] = check_ssl(url)
             with st.status("Detectando tecnologías..."):
                 resultados["tecnologias"] = detect_technologies(url)
+                fp = resultados["tecnologias"].get("fingerprint")
+                if fp:
+                    ia_techs = detectar_tecnologias_ia(fp)
+                    existentes = {t.lower() for t in resultados["tecnologias"]["tecnologias"]}
+                    for t in ia_techs:
+                        if t.lower() not in existentes:
+                            resultados["tecnologias"]["tecnologias"].append(t)
+                            existentes.add(t.lower())
             with st.status("Escaneando puertos..."):
                 resultados["puertos"] = scan_ports(url)
             with st.status("Detectando formularios..."):
@@ -58,7 +69,7 @@ with col_scan:
 
         st.markdown("---")
         st.subheader("📊 Análisis de la IA")
-        st.markdown(st.session_state.resumen_ia)
+        st.markdown(st.session_state.resumen_ia, unsafe_allow_html=True)
 
         st.markdown("---")
         st.subheader("🔎 Resultados detallados")
@@ -134,6 +145,19 @@ with col_scan:
                     st.success("No se encontraron rutas sensibles expuestas")
 
 with col_chat:
+    with st.expander("⚖️ Términos y condiciones"):
+        st.markdown(
+            "**WebSec Analyzer** es una herramienta con fines exclusivamente "
+            "**académicos y de auditoría autorizada**.\n\n"
+            "Los autores **no se hacen responsables** por el uso ilícito, "
+            "anti-ético o no autorizado que se le dé a esta herramienta. "
+            "Se recomienda **siempre** efectuar las pruebas únicamente sobre "
+            "dominios previamente autorizados por sus propietarios o el "
+            "representante legal correspondiente.\n\n"
+            "El uso de esta herramienta implica la aceptación íntegra de "
+            "estos términos."
+        )
+
     st.subheader("💬 Asistente de seguridad")
 
     if not st.session_state.resultados:
@@ -156,3 +180,12 @@ with col_chat:
                 )
             st.session_state.chat_history.append({"role": "assistant", "content": respuesta})
             st.rerun()
+
+st.markdown("---")
+st.markdown(
+    "<div style='text-align:center; color:#888; font-size:0.85rem; padding:1rem 0;'>"
+    "© 2026 <b>WebSec Analyzer</b> — Felix Alejandro García García &amp; Emiliano Mendoza Vázquez. "
+    "Todos los derechos reservados."
+    "</div>",
+    unsafe_allow_html=True,
+)

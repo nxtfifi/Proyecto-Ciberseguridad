@@ -1,5 +1,6 @@
 import ssl
 import socket
+import certifi
 from datetime import datetime
 
 def check_ssl(url: str) -> dict:
@@ -8,7 +9,7 @@ def check_ssl(url: str) -> dict:
     try:
         hostname = url.replace("https://", "").replace("http://", "").split("/")[0]
         result["https"] = url.startswith("https://")
-        ctx = ssl.create_default_context()
+        ctx = ssl.create_default_context(cafile=certifi.where())
         with ctx.wrap_socket(socket.create_connection((hostname, 443), timeout=10), server_hostname=hostname) as s:
             cert = s.getpeercert()
             result["version_tls"] = s.version()

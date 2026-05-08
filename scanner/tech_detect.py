@@ -18,8 +18,32 @@ FIRMAS = {
     "ASP.NET": ["ASP.NET", "X-AspNet-Version", "__VIEWSTATE"],
 }
 
+def _build_fingerprint(r) -> dict:
+    soup = BeautifulSoup(r.text, "html.parser")
+    title = soup.title.string.strip() if soup.title and soup.title.string else None
+
+    metas = []
+    for meta in soup.find_all("meta"):
+        name = meta.get("name") or meta.get("property") or meta.get("http-equiv")
+        content = meta.get("content")
+        if name and content:
+            metas.append({"name": name, "content": content[:200]})
+
+    scripts = [s.get("src") for s in soup.find_all("script") if s.get("src")]
+    links = [l.get("href") for l in soup.find_all("link") if l.get("href")]
+
+    return {
+        "headers": dict(r.headers),
+        "cookies": list(r.cookies.keys()),
+        "title": title,
+        "metas": metas[:20],
+        "scripts": scripts[:30],
+        "links": links[:30],
+    }
+
+
 def detect_technologies(url: str) -> dict:
-    result = {"tecnologias": [], "servidor": None, "error": None}
+    result = {"tecnologias": [], "servidor": None, "error": None, "fingerprint": None}
     try:
         r = requests.get(url, timeout=10, allow_redirects=True)
         contenido = r.text
@@ -32,6 +56,7 @@ def detect_technologies(url: str) -> dict:
                     if tech not in result["tecnologias"]:
                         result["tecnologias"].append(tech)
                     break
+        result["fingerprint"] = _build_fingerprint(r)
     except Exception as e:
         result["error"] = str(e)
     return result
